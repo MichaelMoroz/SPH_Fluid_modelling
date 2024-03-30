@@ -1,12 +1,19 @@
+struct Particle
+{
+    float3 velocity;
+    float3 position;
+    float pressure;
+    float density;
+};
+
+
 ////To be set from GPU controller
 RWStructuredBuffer<float3> particlePositions;
-RWStructuredBuffer<float3> particleViscosities;
-RWStructuredBuffer<float> particlePressures;
-RWStructuredBuffer<float> particleMasses;
-RWStructuredBuffer<float> particleDensities;
+RWStructuredBuffer<Particle> particleRead;
+RWStructuredBuffer<Particle> particleWrite;
 
-uint nParticlesX;
-uint nParticlesY;
+int frame;
+uint nParticles;
 float time;
 float viscosityCoefficient;
 float tensionCoefficient;
@@ -16,75 +23,57 @@ float3 BoxSize; // set it later
 float particleMass= 2.0;
 float radius = 2;
 
+#define PI 3.14159265359
+
+uint pcg(uint v) {
+	uint state = v * 747796405u + 2891336453u;
+	uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+	return (word >> 22u) ^ word;
+  }
+  
+float pcgf(uint v) {
+return float(pcg(v)) / float(0xffffffffu);
+}
+  
+
 ///////////////////////
 
-struct Particle
-{
-    float pressure;
-    float density;
-    float3 currentForce;
-    float3 velocity;
-    float3 position;
-};
-
-
-//////Util
-uint GetIdxFromID(uint3 id)
-{
-	return id.x * nParticlesY + id.y;
-}
-//////////
-
-///////Tests
-#define PI 3.14159265358979323846
-float step;
-
-float3 Wave (float u, float v, float t) {
-	float3 p;
-	p.x = u;
-	p.y = sin(PI * (u + v + t));
-	p.z = v;
-	return p;
-}
-
-float3 MaxwellFlatCircle(float u, float v, float t)
-{
-	float3 pos;
-	pos.x = cos(PI * (u + v + t/10));
-	pos.y = sin(PI * (u + v + t/10));
-
-	if(v > 0.25)
-	{
-		pos.y /= 2;
-	}
-
-	if(u > 0.25)
-	{
-		pos.x /= 2;
-	}
-
-	pos.z = 0;
-	return pos;
-}
-/////////////
-
-float2 GetUV (uint3 id) {
-	return (id.xy + 0.5) * step - 1.0;
-}
-
-void SetParticlePosition(uint3 id, float3 position) {
-    if(id.x < nParticlesX && id.y < nParticlesY)
-    {
-        particlePositions[GetIdxFromID(id)] = position;
-    }
-}
-
 #pragma kernel ParticleLoop 
-[numthreads(8,8,1)]
+[numthreads(64,1,1)]
 void ParticleLoop(uint3 id : SV_DispatchThreadID)
 {
-    float2 uv = GetUV(id);
-	SetParticlePosition(id, MaxwellFlatCircle(uv.x, uv.y, time));
+	Particle prevParticle = particleRead[id.x];
+
+	if(frame == 0)
+	{
+		prevParticle.velocity = float3(0,0,0);
+		prevParticle.pressure = 0;
+		prevParticle.density = 0;
+		//set random initial positions
+		prevParticle.position = float3(pcgf(id.x), pcgf(id.x+1), 0.0);
+	}
+	else
+	{
+		float3 force = 0;
+		for(uint i = 0; i < nParticles; i++)
+		{
+			Particle targetParticle = particleRead[i];
+			float3 deltaPos = prevParticle.position - targetParticle.position;
+			float dst = length(deltaPos) + 0.0001;
+			//compute gravitational force
+			force -= 0.00001*deltaPos / pow(dst, 3);
+		}
+	
+		//integrate
+		prevParticle.velocity += force * 0.005;
+		prevParticle.position += prevParticle.velocity * 0.005;
+	}
+
+	
+	particleWrite[id.x] = prevParticle;
+
+
+    particlePositions[id.x] = prevParticle.position;
 }
 
 ///////Kernels
@@ -148,145 +137,148 @@ float WViscLaplace(float3 deltaPos, float h)
 }
 /////////////
 
-///////Forces
-float GetDensityAtParticle(uint3 id)
-{
-	uint currentParticleIdx = GetIdxFromID(id);
-	float density = 0;
-	for(uint i = 0; i < nParticlesX; i++)
-	{
-		for(uint j = 0; j < nParticlesY; j++)
-		{
-			uint targetParticleIdx = GetIdxFromID(uint3(i, j, 0));
-			density += WPoly(particlePositions[currentParticleIdx] - particlePositions[targetParticleIdx], WPolyh) * particleMasses[targetParticleIdx];
-		}
-	}
-}
-
-float3 GetGravityAtParticle(uint3 id)
-{
-	return particleDensities[GetIdxFromID(id)] * gravityVector;
-}
-
-float3 GetPressureAtParticle(uint3 id)
-{
-	uint currentParticleIdx = GetIdxFromID(id);
-	float3 newPressure = float3(0,0,0);
-	for(uint i = 0; i < nParticlesX; i++)
-	{
-		for(uint j = 0; j < nParticlesY; j++)
-		{
-			uint targetParticleIdx = GetIdxFromID(uint3(i, j, 0));
-			float tempTerm = ((particlePressures[currentParticleIdx] + particlePressures[targetParticleIdx])*particleMasses[targetParticleIdx]) /(2 * particleDensities[targetParticleIdx]);
-			float3 pressureContribution = WSpikyGradient(particlePositions[currentParticleIdx] - particlePositions[targetParticleIdx], WSpikyh) * tempTerm;
-
-			newPressure += pressureContribution;
-		}
-	}
-	return -1 * newPressure;
-}
-
-float3 GetViscosityAtParticle(uint3 id)
-{
-	uint currentParticleIdx = GetIdxFromID(id);
-	float3 newViscosity = float3(0,0,0);
-
-	for(uint i = 0; i < nParticlesX; i++)
-	{
-		for(uint j = 0; j < nParticlesY; j++)
-		{
-			uint targetParticleIdx = GetIdxFromID(uint3(i, j, 0));
-			float3 tempTerm = particleViscosities[targetParticleIdx] - particleViscosities[currentParticleIdx] * (particleMasses[targetParticleIdx]/particleDensities[targetParticleIdx]);
-			tempTerm *= WViscLaplace(particlePositions[currentParticleIdx] - particlePositions[targetParticleIdx], WVisch);
-		}
-	}
-	return viscosityCoefficient * newViscosity;
-}
-
-float3 GetTensionNorm(uint3 id)
-{
-	uint currentParticleIdx = GetIdxFromID(id);
-	float3 newNorm = float3(0,0,0);
-
-	for(uint i = 0; i < nParticlesX; i++)
-	{
-		for(uint j = 0; j < nParticlesY; j++)
-		{
-			uint targetParticleIdx = GetIdxFromID(uint3(i, j, 0));
-			float tempTerm = particleMasses[targetParticleIdx]/particleDensities[targetParticleIdx];
-			float3 normContribution = WPolyGradient(particlePositions[currentParticleIdx] - particlePositions[targetParticleIdx], WPolyh) * tempTerm;
-			newNorm += normContribution;
-		}
-	}
-	return -1 * newNorm; //theoretically minus must be here
-}
-
-float GetTensionLaplacian(uint3 id)
-{
-	uint currentParticleIdx = GetIdxFromID(id);
-	float newLaplacian = 0;
-
-	for(uint i = 0; i < nParticlesX; i++)
-	{
-		for(uint j = 0; j < nParticlesY; j++)
-		{
-			uint targetParticleIdx = GetIdxFromID(uint3(i, j, 0));
-			float tempTerm = particleMasses[targetParticleIdx]/particleDensities[targetParticleIdx];
-			float laplacianContribution = WPolyLaplace(particlePositions[currentParticleIdx] - particlePositions[targetParticleIdx], WPolyh) * tempTerm;
-			newLaplacian += laplacianContribution;
-		}
-	}
-	return newLaplacian;
-}
-
-float3 GetTensionAtPoint(uint3 id)
-{
-	float3 norm = GetTensionNorm(id);
-	return -tensionCoefficient * GetTensionLaplacian(id) * norm / length(norm);
-}
-
-/////////////
-
-[numthreads(8,1,1)]
-void Integrate (uint3 id: SV_DISPATCHTHREADID)
-{
-    
-    // v(t + Δt/2) = v(t - Δt/2) + a(t)Δt
-    // x(t + Δt/2) = x(t) + v(t + Δt/2)Δt
-
-    float3 acceleration = _particles[id.x].currentForce / particleMass;
-
-    _particles[id.x].velocity = _particles[id.x].velocity + (acceleration * timestep);
-    _particles[id.x].position = _particles[id.x].position + (_particles[id.x].velocity * timestep);
-
-    float3 topRight = boxSize / 2;
-    float3 bottomLeft = -boxSize / 2;
-
-     if (_particles[id.x].position.x - radius < bottomLeft.x) {
-        _particles[id.x].position.x = bottomLeft.x + radius;
-    }
-
-    if (_particles[id.x].position.y - radius < bottomLeft.y) {
-        _particles[id.x].position.y = bottomLeft.y + radius;
-    }
-
-    if (_particles[id.x].position.z - radius < bottomLeft.z) {
-        _particles[id.x].position.z = bottomLeft.z + radius;
-    }
-
-
-    if (_particles[id.x].position.x + radius > topRight.x) {
-        _particles[id.x].position.x = topRight.x - radius;
-    }
-
-    if (_particles[id.x].position.y + radius > topRight.y) {
-        _particles[id.x].position.y = topRight.y - radius;
-    }
-
-    if (_particles[id.x].position.z + radius > topRight.z) {
-        _particles[id.x].position.z = topRight.z - radius;
-    }
-
-    
- 
-}
+/////////Forces
+//float GetDensityAtParticle(uint3 id)
+//{
+//	uint currentParticleIdx = GetIdxFromID(id);
+//	float density = 0;
+//	for(uint i = 0; i < nParticlesX; i++)
+//	{
+//		for(uint j = 0; j < nParticlesY; j++)
+//		{
+//			uint targetParticleIdx = GetIdxFromID(uint3(i, j, 0));
+//			density += WPoly(particlePositions[currentParticleIdx] - particlePositions[targetParticleIdx], WPolyh) * particleMasses[targetParticleIdx];
+//		}
+//	}
+//}
+//
+//float3 GetGravityAtParticle(uint3 id)
+//{
+//	return particleDensities[GetIdxFromID(id)] * gravityVector;
+//}
+//
+//float3 GetPressureAtParticle(uint3 id)
+//{
+//	uint currentParticleIdx = GetIdxFromID(id);
+//	float3 newPressure = float3(0,0,0);
+//	for(uint i = 0; i < nParticlesX; i++)
+//	{
+//		for(uint j = 0; j < nParticlesY; j++)
+//		{
+//			uint targetParticleIdx = GetIdxFromID(uint3(i, j, 0));
+//			float tempTerm = ((particlePressures[currentParticleIdx] + particlePressures[targetParticleIdx])*particleMasses[targetParticleIdx]) /(2 * particleDensities[targetParticleIdx]);
+//			float3 pressureContribution = WSpikyGradient(particlePositions[currentParticleIdx] - particlePositions[targetParticleIdx], WSpikyh) * tempTerm;
+//
+//			newPressure += pressureContribution;
+//		}
+//	}
+//	return -1 * newPressure;
+//}
+//
+//float3 GetViscosityAtParticle(uint3 id)
+//{
+//	uint currentParticleIdx = GetIdxFromID(id);
+//	float3 newViscosity = float3(0,0,0);
+//
+//	for(uint i = 0; i < nParticlesX; i++)
+//	{
+//		for(uint j = 0; j < nParticlesY; j++)
+//		{
+//			uint targetParticleIdx = GetIdxFromID(uint3(i, j, 0));
+//			float3 tempTerm = particleViscosities[targetParticleIdx] - particleViscosities[currentParticleIdx] * (particleMasses[targetParticleIdx]/particleDensities[targetParticleIdx]);
+//			tempTerm *= WViscLaplace(particlePositions[currentParticleIdx] - particlePositions[targetParticleIdx], WVisch);
+//		}
+//	}
+//	return viscosityCoefficient * newViscosity;
+//}
+//
+//float3 GetTensionNorm(uint3 id)
+//{
+//	uint currentParticleIdx = GetIdxFromID(id);
+//	float3 newNorm = float3(0,0,0);
+//
+//	for(uint i = 0; i < nParticlesX; i++)
+//	{
+//		for(uint j = 0; j < nParticlesY; j++)
+//		{
+//			uint targetParticleIdx = GetIdxFromID(uint3(i, j, 0));
+//			float tempTerm = particleMasses[targetParticleIdx]/particleDensities[targetParticleIdx];
+//			float3 normContribution = WPolyGradient(particlePositions[currentParticleIdx] - particlePositions[targetParticleIdx], WPolyh) * tempTerm;
+//			newNorm += normContribution;
+//		}
+//	}
+//	return -1 * newNorm; //theoretically minus must be here
+//}
+//
+//float GetTensionLaplacian(uint3 id)
+//{
+//	uint currentParticleIdx = GetIdxFromID(id);
+//	float newLaplacian = 0;
+//
+//	for(uint i = 0; i < nParticlesX; i++)
+//	{
+//		for(uint j = 0; j < nParticlesY; j++)
+//		{
+//			uint targetParticleIdx = GetIdxFromID(uint3(i, j, 0));
+//			float tempTerm = particleMasses[targetParticleIdx]/particleDensities[targetParticleIdx];
+//			float laplacianContribution = WPolyLaplace(particlePositions[currentParticleIdx] - particlePositions[targetParticleIdx], WPolyh) * tempTerm;
+//			newLaplacian += laplacianContribution;
+//		}
+//	}
+//	return newLaplacian;
+//}
+//
+//float3 GetTensionAtPoint(uint3 id)
+//{
+//	float3 norm = GetTensionNorm(id);
+//	return -tensionCoefficient * GetTensionLaplacian(id) * norm / length(norm);
+//}
+//
+///////////////
+//
+//RWStructuredBuffer<Particle> _particlesRead;
+//RWStructuredBuffer<Particle> _particlesWrite;
+//
+//[numthreads(8,1,1)]
+//void Integrate (uint3 id: SV_DISPATCHTHREADID)
+//{
+//    
+//    // v(t + Δt/2) = v(t - Δt/2) + a(t)Δt
+//    // x(t + Δt/2) = x(t) + v(t + Δt/2)Δt
+//
+//    float3 acceleration = _particles[id.x].currentForce / particleMass;
+//
+//    _particles[id.x].velocity = _particles[id.x].velocity + (acceleration * timestep);
+//    _particles[id.x].position = _particles[id.x].position + (_particles[id.x].velocity * timestep);
+//
+//    //float3 topRight = boxSize / 2;
+//    //float3 bottomLeft = -boxSize / 2;
+////
+//    // if (_particles[id.x].position.x - radius < bottomLeft.x) {
+//    //    _particles[id.x].position.x = bottomLeft.x + radius;
+//    //}
+////
+//    //if (_particles[id.x].position.y - radius < bottomLeft.y) {
+//    //    _particles[id.x].position.y = bottomLeft.y + radius;
+//    //}
+////
+//    //if (_particles[id.x].position.z - radius < bottomLeft.z) {
+//    //    _particles[id.x].position.z = bottomLeft.z + radius;
+//    //}
+////
+////
+//    //if (_particles[id.x].position.x + radius > topRight.x) {
+//    //    _particles[id.x].position.x = topRight.x - radius;
+//    //}
+////
+//    //if (_particles[id.x].position.y + radius > topRight.y) {
+//    //    _particles[id.x].position.y = topRight.y - radius;
+//    //}
+////
+//    //if (_particles[id.x].position.z + radius > topRight.z) {
+//    //    _particles[id.x].position.z = topRight.z - radius;
+//    //}
+//
+//    
+// 
+//}
