@@ -56,5 +56,5 @@
         "temp/": true,
         "Temp/": true
     },
-    "dotnet.defaultSolution": "SPH_Fluid_Main.sln"
+    "dotnet.defaultSolution": "SPH_Fluid_modelling.sln"
 }

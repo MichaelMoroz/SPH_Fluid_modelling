@@ -1,15 +1,17 @@
+//enable debug symbols
+#pragma enable_d3d11_debug_symbols
+
 #define PI 3.14159265358979323846
 
 struct Particle
 {
     float3 position;
 	float3 velocity;
-	float3 viscosity;
-    float pressure;
     float density;
-	//float currentForce;
+	float particleMass;
 };
-RWStructuredBuffer<float3> particlePositions;
+
+RWStructuredBuffer<float3> particleRenderPositions;
 RWStructuredBuffer<Particle> particleRead;
 RWStructuredBuffer<Particle> particleWrite;
 
@@ -19,373 +21,109 @@ uint nParticles;
 float time;
 uint frame;
 float viscosityCoefficient;
-float tensionCoefficient;
-float3 gravityVector;
-float timestep = 0.0005;
-float3 BoxSize;
-float particleMass= 2.0;
-float radius = 2;
+float stiffnessCoefficient;
+float restDensity;
+float interactionRadius;
 
-float BOX_SCALE;
-float BOX_INFLUENCE;
+float timeStep;
 
-float WPolyh = 0;
-float WSpikyh = 0;
-float WVisch = 0;
-
-//////////////////////
-
-//////Util/////
 uint pcg(uint v) {
 	uint state = v * 747796405u + 2891336453u;
 	uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
 	return (word >> 22u) ^ word;
-  }
+}
   
 float pcgf(uint v) {
-return float(pcg(v)) / float(0xffffffffu);
+	return float(pcg(v)) / float(0xffffffffu);
 }
 
-uint hash(uint x) {
-    x += (x << 10u);
-    x ^= (x >> 6u);
-    x += (x << 3u);
-    x ^= (x >> 11u);
-    x += (x << 15u);
-    return x;
-}
-
-float rand(uint seed) {
-    return frac(sin(hash(seed)) * 43758.5453);
-}
-/////////////
-
-///////Kernels
-
-float WPoly(float3 deltaPos, float h){
-	float dst = length(deltaPos);
-    if (dst > 0 && dst <= h)
-	{
-		float coefA = 4.0 / (PI*pow(h, 8.0));
-		float v = h*h - dst*dst;
-		return coefA * pow(v, 3.0);
-	}
-	return 0;
-}
-
-float3 WPolyGradient(float3 deltaPos, float h)
+float SmoothingKernel(float distance, float radius)
 {
-	float dst = length(deltaPos);
-    if (dst > 0 && dst <= h)
-	{
-		float coefB = 24.0 / (PI * pow(h, 8.0));
-		return -coefB * deltaPos * pow((h*h - dst*dst), 2.0);
-	}
-	return float3(0.0, 0.0, 0.0);
+	distance = distance / radius;
+	float weight = exp(-distance * distance);
+	return weight;
 }
 
-float WPolyLaplace(float3 deltaPos, float h)
+float EquationOfState(float density, float restDensity)
 {
-	float dst = length(deltaPos);
-    if (dst > 0 && dst <= h)
-	{
-		float coefC = 24.0 / (PI * pow(h, 8.0));
-		return -coefC * (h*h - dst*dst) * (3*h*h - 7*dst*dst);
-	}
-	return 0;
+	return stiffnessCoefficient * (density - restDensity);
 }
-
-float3 WSpikyGradient(float3 deltaPos, float h)
-{
-	float dst = length(deltaPos);
-    if (dst > 0 && dst <= h)
-	{
-		float coefB = 30.0 / (PI * pow(h, 5.0));
-		return (-coefB * deltaPos * pow((h - dst), 2.0)) / dst;
-	}
-	return float3(0.0, 0.0, 0.0);
-}
-
-float WViscLaplace(float3 deltaPos, float h)
-{
-	float dst = length(deltaPos);
-    if (dst > 0 && dst <= h)
-	{
-		float coefC = 20.0 / (PI * pow(h, 5.0));
-		return -coefC * (h - dst);
-	}
-	return 0;
-}
-
-float radius4 = 16;
-float radius5 = 32;
-float SpikyKernelFirstDerivative(float distance)
-{
-    float x = 1.0f - distance / radius;
-    return -45.0f / ( PI * radius4 ) * x * x;
-}
-float SpikyKernelSecondDerivative(float distance)
-{
-
-    float x = 1.0f - distance / radius;
-    return 90.f / ( PI * radius5 ) * x;
-}
-
-
-float3 SpikyKernelGradient(float distance, float3 directionFromCenter)
-{
-    return SpikyKernelFirstDerivative(distance) * directionFromCenter;
-}
-/////////////
-
-///////Forces
-float GetDensityAtParticle(uint3 id)
-{
-	uint currentParticleIdx = id.x;
-	float density = 0;
-	for(uint i = 0; i < nParticles; i++)
-	{
-		density += WPoly(particleRead[currentParticleIdx].position - particleRead[i].position, WPolyh);
-	}
-	return density*particleMass;
-}
-
-float3 GetGravityAtParticle(uint3 id)
-{
-	return particleRead[id.x].density * gravityVector;
-}
-
-float3 GetPressureAtParticle(uint3 id)
-{
-	uint currentParticleIdx = id.x;
-	float3 newPressure = float3(0,0,0);
-	for(uint i = 0; i < nParticles; i++)
-	{
-		float tempTerm = ((particleRead[currentParticleIdx].pressure + particleRead[i].pressure)*particleMass) /(2 * particleRead[i].density);
-		float3 pressureContribution = WSpikyGradient(particleRead[currentParticleIdx].position - particleRead[i].position, WSpikyh) * tempTerm;
-
-		newPressure += pressureContribution;
-	}
-	return -1 * newPressure;
-}
-
-float3 GetViscosityAtParticle(uint3 id)
-{
-	uint currentParticleIdx = id.x;
-	float3 newViscosity = float3(0,0,0);
-
-	for(uint i = 0; i < nParticles; i++)
-	{
-		float3 tempTerm = particleRead[i].viscosity - particleRead[currentParticleIdx].viscosity * (particleMass/particleRead[i].density);
-		tempTerm *= WViscLaplace(particleRead[currentParticleIdx].position - particleRead[i].position, WVisch);
-	}
-	return viscosityCoefficient * newViscosity;
-}
-
-float3 GetTensionNorm(uint3 id)
-{
-	uint currentParticleIdx = id.x;
-	float3 newNorm = float3(0,0,0);
-
-	for(uint i = 0; i < nParticles; i++)
-	{
-		float3 normContribution = WPolyGradient(particleRead[currentParticleIdx].position - particleRead[i].position, WPolyh)/particleRead[i].density;
-		newNorm += normContribution;
-	}
-	return -1 * newNorm * particleMass;
-}
-
-float GetTensionLaplacian(uint3 id)
-{
-	uint currentParticleIdx = id.x;
-	float newLaplacian = 0;
-
-	for(uint i = 0; i < nParticles; i++)
-	{
-		float laplacianContribution = WPolyLaplace(particleRead[currentParticleIdx].position - particleRead[i].position, WPolyh)/particleRead[i].density;
-		newLaplacian += laplacianContribution;
-	}
-	return newLaplacian * particleMass;
-}
-
-float3 GetTensionAtPoint(uint3 id)
-{
-	float3 norm = GetTensionNorm(id);
-	return -tensionCoefficient * GetTensionLaplacian(id) * norm / length(norm);
-}
-
-float smoothstep(float x, float a, float b) {
-    float frac = (x-a)/(b-a);
-    float max = frac>0 ? frac : 0;
-    float t = max<1 ? max : 1;
-   
-    return t*t*(3-2*t); 
-}
-
-float3 GetBoxNormalForce(uint3 curPoint) {
-	float _box_start = BOX_SCALE - BOX_INFLUENCE;
-    float3 force;
-    float horizontal = smoothstep(abs(curPoint.x), _box_start, BOX_SCALE);
-    float vertical = smoothstep(abs(curPoint.y), _box_start, BOX_SCALE);
-    force.x = -curPoint.x * horizontal;
-    force.y = -curPoint.y * vertical;
-	force.z = 0;
-    
-    return force;
-}
-
-/////Integration/////
-// float viscosity = 200;
-// void ComputeForces (uint3 id)
-// {
-//     float3 origin = particleRead[id.x].position;
-//     float density2 = particleRead[id.x].density * particleRead[id.x].density; 
-//     float3 pressure = float3(0,0,0);
-//     float3 visc = float3(0,0,0);
-//     float mass2 = particleMass * particleMass;
-
-//     for (int i = 0; i < nParticles; ++i) {
-        
-//         if (origin.x == particleRead[i].position.x && origin.y == particleRead[i].position.y && origin.z == particleRead[i].position.z) {
-//             continue;
-//         }
-
-//         float dist = distance(particleRead[i].position, origin);
-//         if (dist < radius*2) {
-//             float3 pressureGradientDirection = normalize(particleRead[id.x].position-particleRead[i].position);
-//             pressure += mass2 * ( particleRead[id.x].pressure / density2 + particleRead[i].pressure / ( particleRead[i].density * particleRead[i].density ) ) * SpikyKernelGradient(dist, pressureGradientDirection);
-//             visc += viscosity * mass2 * ( particleRead[i].velocity - particleRead[id.x].velocity ) / particleRead[i].density * SpikyKernelSecondDerivative(dist);
-//         }
-//     }
-
-//     particleWrite[id.x].currentForce = float3(0,(-9.81 * particleMass), 0) - pressure + visc;
-
-//     // Handle Collision
-
-//     // float3 colDir = particleRead[id.x].position-spherePos;
-//     // if (length(colDir) < sphereRadius) {
-//     //     float mag = sphereRadius/length(colDir);
-//     //     particleRead[id.x].currentForce += colDir*300*mag;
-//     // }
-
-//     // + pressure + visc/_particles[id.x].density;
-// }
-// #pragma kernel ParticleLoop 
-// [numthreads(64,1,1)]
-// void ParticleLoop(uint3 id : SV_DispatchThreadID)
-// {
-// 	Particle prevParticle = particleRead[id.x];
-// 	Particle currentParticle = particleWrite[id.x];
-// 	if(frame == 0)
-// 	{
-// 		prevParticle.pressure = 0;
-// 		prevParticle.density = 0;
-// 		prevParticle.currentForce = 0;
-// 		float3 viscosity = 0;
-// 		float2 seed = float2(id.x, frame);
-// 		prevParticle.position = float3(pcgf(id.x), pcgf(id.x+1), 0.0);
-// 		prevParticle.velocity = float3(rand(seed + 2.0), rand(seed + 3.0), rand(seed + 4.0)) * 2.0 - 1.0;
-// 	}
-// 	else
-// 	{
-// 		float3 force = 0;
-// 		float3 vel = 0;
-// 		for(uint i = 0; i < nParticles; i++)
-// 		{
-// 			Particle targetParticle = particleRead[i];
-// 			if (targetParticle.position.x == particleRead[i].position.x && targetParticle.position.y == particleRead[i].position.y && targetParticle.position.z == particleRead[i].position.z) {
-// 				continue;
-// 			}
-// 			ComputeForces(id);
-// 			float3 deltaPos = prevParticle.position - targetParticle.position;
-// 			float dst = length(deltaPos) + 0.0001;
-// 			//compute gravitational force
-// 			// force -= 0.00001*deltaPos / pow(dst, 3);
-// 			vel += prevParticle.velocity + ((prevParticle.currentForce/particleMass) *0.005);
-// 			// prevParticle.position += vel * 0.005;
-// 			// prevParticle.velocity = vel;
-// 		}
-// 		prevParticle.position += vel * 0.005;
-// 		prevParticle.velocity = vel;
-	
-		
-// 		// prevParticle.velocity += force * 0.005;
-// 		// prevParticle.position += prevParticle.velocity * 0.005;
-// 	}
-
-	
-// 	particleWrite[id.x] = prevParticle;
-//     particlePositions[id.x] = prevParticle.position;
-// }
 
 //need to add gradient spline kernel
-float3 CalculateAcceleration(uint3 particleId)
+float3 CalculateAcceleration(Particle particle, uint currentParticleIdx)
 {
 	float3 acceleration = float3(0,0,0);
-	uint currentParticleIdx = particleId.x;
-	for(uint j = 0; j < nParticles; j++)
-	{
-		float tempTerm = particleMass * (particleRead[currentParticleIdx].pressure/pow(particleRead[currentParticleIdx].density, 2) + particleRead[j].pressure/pow(particleRead[j].density, 2));
-		float3 accelerationContribution = tempTerm * WPolyGradient(particleRead[currentParticleIdx].position - particleRead[j].position, WPolyh);
-		acceleration += accelerationContribution;
+	for(uint i = 0; i < nParticles; i++)
+	{	
+		if(i == currentParticleIdx) { continue; } //dont calculate self force
+		Particle neighbour = particleRead[i];
+		float3 deltaPos = particle.position - neighbour.position;
+		float weight = SmoothingKernel(length(deltaPos), interactionRadius);
+
+		//pressure
+		float density = 0.5 * (particle.density + neighbour.density);
+		float pressure = EquationOfState(density, restDensity);
+		acceleration += pressure * weight * deltaPos;
+
+		//friction
+		float3 relativeVelocity = particle.velocity - neighbour.velocity;
+		acceleration -= viscosityCoefficient * relativeVelocity * weight;
 	}
 
-	float3 newPressure = GetPressureAtParticle(particleId);
-	float3 newViscosity = GetViscosityAtParticle(particleId);
-	float3 newGravity = GetGravityAtParticle(particleId);
-	float3 newTension = GetTensionAtPoint(particleId);
-	float3 newDensity = GetDensityAtParticle(particleId);
-	float3 newNormal = GetBoxNormalForce(particleId);
-
-	acceleration *= -1;
-	acceleration += (newPressure + newViscosity + newGravity + newTension + newDensity + newNormal)/particleMass;
-
-	particleWrite[currentParticleIdx].viscosity = newViscosity;
-	particleWrite[currentParticleIdx].pressure = length(newPressure);
-	particleWrite[currentParticleIdx].density = length(newDensity);
+	//add attraction to zero (like a planet)
+	float3 attr_point = float3(0,0,0);
+	acceleration += (attr_point - particle.position) * 0.001;
 
 	return acceleration;
 }
 
-#pragma kernel ParticleLoop 
+#pragma kernel ParticleIntegration 
 [numthreads(64,1,1)]
-void ParticleLoop(uint3 id : SV_DispatchThreadID)
+void ParticleIntegration(uint3 id : SV_DispatchThreadID)
 {
 	uint currentParticleIdx = id.x;
 	if(currentParticleIdx >= nParticles){return;}
 
-	Particle prevParticle = particleRead[currentParticleIdx];
-	Particle nextParticle = particleWrite[currentParticleIdx];
-	float3 newPos = float3(0.0, 0.0, 0.0);
+	Particle particle = particleRead[currentParticleIdx];
 
-	if(frame == 0)
-	{
-		prevParticle.velocity = float3(0.0,0.0,0.0);
-		prevParticle.position = float3(pcgf(currentParticleIdx), pcgf(currentParticleIdx+5), 0.0);
-		prevParticle.viscosity = float3(0.0,0.0,0.0);
-		prevParticle.pressure = 0;
-		prevParticle.density = 0;
-
-		nextParticle.velocity = float3(0.0,0.0,0.0);
-		nextParticle.position = prevParticle.position;
-		prevParticle.viscosity = float3(0.0,0.0,0.0);
-		nextParticle.pressure = 0;
-		nextParticle.density = 0;
-
-		newPos = prevParticle.position;
-		particleRead[currentParticleIdx] = prevParticle;
-	} else
-	{
-		float3 frameAcceleration = CalculateAcceleration(id);
-		float3 newVelocity = prevParticle.velocity + timestep * frameAcceleration;
-
-		newPos = prevParticle.position + newVelocity * timestep;
-
-		///newPos = prevParticle.position;
-		nextParticle.position = newPos;
-		nextParticle.velocity = newVelocity;
+	if(frame == 0) {
+		particle.velocity = float3(0.0,0.0,0.0);
+		particle.position = float3(pcgf(currentParticleIdx), pcgf(currentParticleIdx+5), 0.0);
+		//remap to -2,2
+		particle.position.xy = particle.position.xy * 4.0 - 2.0;
+		particle.density = 0;
+	} else {
+		float3 acceleration = CalculateAcceleration(particle, currentParticleIdx);
+		//integrate
+		particle.velocity += acceleration * timeStep;
+		particle.position += particle.velocity * timeStep;
 	}
 
-	particleWrite[currentParticleIdx] = nextParticle;
-	particlePositions[currentParticleIdx] = newPos;
+	particleWrite[currentParticleIdx] = particle;
+	particleRenderPositions[currentParticleIdx] = particle.position;
+}
+
+#pragma kernel ParticleDensity
+[numthreads(64,1,1)]
+void ParticleDensity(uint3 id : SV_DispatchThreadID)
+{
+	uint currentParticleIdx = id.x;
+	if(currentParticleIdx >= nParticles){return;}
+
+	Particle particle = particleRead[currentParticleIdx];
+
+	float density = 0;
+
+	for(uint i = 0; i < nParticles; i++)
+	{
+		if(i == currentParticleIdx) { continue; } //dont calculate self
+		Particle neighbour = particleRead[i];
+		float3 deltaPos = particle.position - neighbour.position;
+		float weight = SmoothingKernel(length(deltaPos), interactionRadius);
+		density += weight;
+	}
+
+	particle.density = density;
+
+	particleWrite[currentParticleIdx] = particle;
 }

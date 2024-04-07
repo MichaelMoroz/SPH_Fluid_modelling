@@ -38,7 +38,7 @@ RenderSettings:
   m_ReflectionIntensity: 1
   m_CustomReflection: {fileID: 0}
   m_Sun: {fileID: 0}
-  m_IndirectSpecularColor: {r: 0.19590235, g: 0.2372657, b: 0.31094998, a: 1}
+  m_IndirectSpecularColor: {r: 0.19591501, g: 0.23728395, b: 0.31093928, a: 1}
   m_UseRadianceAmbientProbe: 0
 --- !u!157 &3
 LightmapSettings:
@@ -389,12 +389,13 @@ MonoBehaviour:
   material: {fileID: 2100000, guid: c1ff24d9c673c63d9b435e6bc180fc9d, type: 2}
   mesh: {fileID: 10207, guid: 0000000000000000e000000000000000, type: 0}
   particleShader: {fileID: 7200000, guid: 86dadde19ce4d7f1eac51fe84e12dfa8, type: 3}
-  nParticles: 5
-  WPolyh: 2
-  WSpikyh: 2
-  WVisch: 3
-  timeStep: 0
+  nParticles: 200
+  timeStep: 0.075
   particleMass: 50
+  stiffnessCoefficient: 1
+  viscosityCoefficient: 0.024
+  interactionRadius: 0.147
+  restDensity: 0.499
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0

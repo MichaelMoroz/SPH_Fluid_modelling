@@ -2,6 +2,7 @@ Shader "Graph/Point Surface GPU" {
 
 	Properties {
 		_Smoothness ("Smoothness", Range(0,1)) = 0.5
+		_Radius ("Radius", Range(0,1)) = 0.5
 	}
 	
 	SubShader {

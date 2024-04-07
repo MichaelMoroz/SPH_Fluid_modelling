@@ -18,18 +18,23 @@ public class GPUController : MonoBehaviour {
     [SerializeField, Range(2, 200)]
 	int nParticles = 10;
 
-    [SerializeField, Range(0, 10)]
-    float WPolyh = 0;
-    [SerializeField, Range(0, 10)]
-    float WSpikyh = 0;
-    [SerializeField, Range(0, 10)]
-    float WVisch = 0;
-
     [SerializeField, Range(0,1)]
     float timeStep;
 
     [SerializeField, Range(1,50)]
     int particleMass;
+
+    [SerializeField, Range(0, 1.0f)]
+    float stiffnessCoefficient = 0.01f;
+
+    [SerializeField, Range(0, 1.0f)]
+    float viscosityCoefficient = 0.1f;
+
+    [SerializeField, Range(0, 1.0f)]
+    float interactionRadius = 0.1f;
+
+    [SerializeField, Range(0, 1.0f)]
+    float restDensity = 0.1f;
 
 
     float boxSize = 5;
@@ -52,6 +57,34 @@ public class GPUController : MonoBehaviour {
 
     int frame = 0;    
 
+    int ParticleIntegrationKernel;
+    int ParticleDensityKernel;
+
+    void Integrate()
+    {
+        particleShader.SetBuffer(0, "particleRenderPositions", positionsBuffer);
+        particleShader.SetBuffer(0, "particleRead", frame % 2 == 0 ? particle0 : particle1);
+        particleShader.SetBuffer(0, "particleWrite", frame % 2 == 0 ? particle1 : particle0);
+        int nGroups = Mathf.CeilToInt(nParticles / 64.0f);
+		particleShader.Dispatch(ParticleIntegrationKernel, nGroups, 1, 1);
+
+        frame++;
+    }
+
+    void ComputeDensity()
+    {
+        particleShader.SetBuffer(1, "particleRead", frame % 2 == 0 ? particle0 : particle1);
+        particleShader.SetBuffer(1, "particleWrite", frame % 2 == 0 ? particle1 : particle0);
+        int nGroups = Mathf.CeilToInt(nParticles / 64.0f);
+
+        particleShader.Dispatch(ParticleDensityKernel, nGroups, 1, 1);
+
+        frame++;
+    }
+
+
+
+
     void UpdateTestShader()
     {
         float step = 10f / nParticles;
@@ -60,28 +93,21 @@ public class GPUController : MonoBehaviour {
         particleShader.SetInt(nParticlesID, nParticles);
         particleShader.SetInt(frameID, frame);
         particleShader.SetVector(gravityID, Vector3.down);
-        particleShader.SetFloat(WPolyhID, WPolyh);
-        particleShader.SetFloat(WSpikyhID, WSpikyh);
-        particleShader.SetFloat(WVischID, WVisch);
         particleShader.SetFloat(timeStepID, timeStep);
+        particleShader.SetFloat("interactionRadius", interactionRadius);
+        particleShader.SetFloat("stiffnessCoefficient", stiffnessCoefficient);
+        particleShader.SetFloat("viscosityCoefficient", viscosityCoefficient);
+        particleShader.SetFloat("restDensity", restDensity);
         particleShader.SetInt(particleMassID, particleMass);
 
-        particleShader.SetBuffer(0, positionsId, positionsBuffer);
-        particleShader.SetBuffer(0, "particleRead", frame % 2 == 0 ? particle0 : particle1);
-        particleShader.SetBuffer(0, "particleWrite", frame % 2 == 0 ? particle1 : particle0);
-        int nGroups = Mathf.CeilToInt(nParticles / 64.0f);
-		particleShader.Dispatch(0, nGroups, 1, 1);
-
-        particleShader.SetFloat(boxSizeID, boxSize);
-        particleShader.SetFloat(boxCoeffID, boxCoeff);
+        Integrate();
+        ComputeDensity();
 
         material.SetFloat(stepId, step);
         material.SetBuffer(positionsId, positionsBuffer);
 
         var bounds = new Bounds(Vector3.zero, Vector3.one * (boxSize + boxSize / nParticles));
         Graphics.DrawMeshInstancedProcedural(mesh, 0, material, bounds, positionsBuffer.count);
-
-        frame++;
     }  
 
     void OnDrawGizmos()
@@ -92,11 +118,12 @@ public class GPUController : MonoBehaviour {
     }  
 
     void OnEnable() {
-		positionsBuffer = new ComputeBuffer(nParticles, 3 * 8);
-        particle0 = new ComputeBuffer(nParticles, 3 * 24 + 2 * 8);
-        particle1 = new ComputeBuffer(nParticles, 3 * 24 + 2 * 8);
+		positionsBuffer = new ComputeBuffer(nParticles, 3 * sizeof(float));
+        particle0 = new ComputeBuffer(nParticles, 8 * sizeof(float));
+        particle1 = new ComputeBuffer(nParticles, 8 * sizeof(float));
 
-        // Debug.Break();
+        ParticleIntegrationKernel = particleShader.FindKernel("ParticleIntegration");
+        ParticleDensityKernel = particleShader.FindKernel("ParticleDensity");
 	}
 
     void OnDisable()
