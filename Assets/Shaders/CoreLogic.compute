@@ -44,6 +44,17 @@ float SmoothingKernel(float distance, float radius)
 	return weight;
 }
 
+float WPoly(float3 deltaPos, float h){
+	float dst = length(deltaPos);
+    if (dst > 0 && dst <= h)
+	{
+		float coefA = 4.0 / (PI*pow(h, 8.0));
+		float v = h*h - dst*dst;
+		return coefA * pow(v, 3.0);
+	}
+	return 0;
+}
+
 float EquationOfState(float density, float restDensity)
 {
 	return stiffnessCoefficient * (density - restDensity);
@@ -58,16 +69,17 @@ float3 CalculateAcceleration(Particle particle, uint currentParticleIdx)
 		if(i == currentParticleIdx) { continue; } //dont calculate self force
 		Particle neighbour = particleRead[i];
 		float3 deltaPos = particle.position - neighbour.position;
-		float weight = SmoothingKernel(length(deltaPos), interactionRadius);
+		float weight = WPoly(deltaPos, interactionRadius); // SmoothingKernel(length(deltaPos), interactionRadius);
 
 		//pressure
 		float density = 0.5 * (particle.density + neighbour.density);
 		float pressure = EquationOfState(density, restDensity);
 		acceleration += pressure * weight * deltaPos;
 
-		//friction
+		//viscosity
+		float3 dir = deltaPos / max(length(deltaPos), 0.0001);
 		float3 relativeVelocity = particle.velocity - neighbour.velocity;
-		acceleration -= viscosityCoefficient * relativeVelocity * weight;
+		acceleration -= viscosityCoefficient * dot(relativeVelocity, dir) * weight * dir;
 	}
 
 	//add attraction to zero (like a planet)
@@ -119,7 +131,7 @@ void ParticleDensity(uint3 id : SV_DispatchThreadID)
 		if(i == currentParticleIdx) { continue; } //dont calculate self
 		Particle neighbour = particleRead[i];
 		float3 deltaPos = particle.position - neighbour.position;
-		float weight = SmoothingKernel(length(deltaPos), interactionRadius);
+		float weight = WPoly(deltaPos, interactionRadius); 
 		density += weight;
 	}
 
