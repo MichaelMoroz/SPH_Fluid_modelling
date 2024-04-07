@@ -387,15 +387,15 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   material: {fileID: 2100000, guid: c1ff24d9c673c63d9b435e6bc180fc9d, type: 2}
-  mesh: {fileID: 10207, guid: 0000000000000000e000000000000000, type: 0}
+  mesh: {fileID: -5958742488079659287, guid: a22228aeecb052e5e93e79091c17c842, type: 3}
   particleShader: {fileID: 7200000, guid: 86dadde19ce4d7f1eac51fe84e12dfa8, type: 3}
   nParticles: 200
   timeStep: 0.075
   particleMass: 50
-  stiffnessCoefficient: 1
-  viscosityCoefficient: 0.024
-  interactionRadius: 0.147
-  restDensity: 0.499
+  stiffnessCoefficient: 0.059
+  viscosityCoefficient: 0.089
+  interactionRadius: 0.129
+  restDensity: 1
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0
