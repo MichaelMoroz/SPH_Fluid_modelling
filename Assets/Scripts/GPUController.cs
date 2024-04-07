@@ -24,16 +24,16 @@ public class GPUController : MonoBehaviour {
     [SerializeField, Range(1,50)]
     int particleMass;
 
-    [SerializeField, Range(0, 1.0f)]
+    [SerializeField, Range(0, 3.0f)]
     float stiffnessCoefficient = 0.01f;
 
-    [SerializeField, Range(0, 1.0f)]
+    [SerializeField, Range(0, 3.0f)]
     float viscosityCoefficient = 0.1f;
 
-    [SerializeField, Range(0, 1.0f)]
+    [SerializeField, Range(0, 3.0f)]
     float interactionRadius = 0.1f;
 
-    [SerializeField, Range(0, 1.0f)]
+    [SerializeField, Range(0, 3.0f)]
     float restDensity = 0.1f;
 
 
